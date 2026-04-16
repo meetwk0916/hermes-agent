@@ -581,6 +581,37 @@ class MatrixAdapter(BasePlatformAdapter):
                     await api.session.close()
                     return False
 
+                # Proactively flush one-time keys to detect stale OTK
+                # conflicts early.  When crypto state is wiped but the
+                # same device ID is reused, the server may still hold OTKs
+                # signed with the old ed25519 key.  Identity key re-upload
+                # succeeds but OTK uploads fail ("already exists" with
+                # mismatched signature).  Peers then cannot establish Olm
+                # sessions and all new messages are undecryptable.
+                try:
+                    await olm.share_keys()
+                except Exception as exc:
+                    exc_str = str(exc)
+                    if "already exists" in exc_str:
+                        logger.error(
+                            "Matrix: device %s has stale one-time keys on the "
+                            "server signed with a previous identity key. "
+                            "Peers cannot establish new Olm sessions with "
+                            "this device. Delete the device from the "
+                            "homeserver and restart, or generate a new "
+                            "access token to get a fresh device ID.",
+                            client.device_id,
+                        )
+                        await crypto_db.stop()
+                        await api.session.close()
+                        return False
+                    # Non-OTK errors are transient (network, etc.) — log
+                    # but allow startup to continue.
+                    logger.warning(
+                        "Matrix: share_keys() warning during startup: %s",
+                        exc,
+                    )
+
                 # Import cross-signing private keys from SSSS and self-sign
                 # the current device. Required after any device-key rotation
                 # (fresh crypto.db, share_keys re-upload) — otherwise the

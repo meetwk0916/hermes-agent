@@ -1469,6 +1469,65 @@ class TestMatrixEncryptedEventHandler:
 
         await adapter.disconnect()
 
+    @pytest.mark.asyncio
+    async def test_connect_fails_on_stale_otk_conflict(self):
+        """connect() must refuse E2EE when OTK upload hits 'already exists'."""
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123"))
+        mock_client.add_event_handler = MagicMock()
+        mock_client.add_dispatcher = MagicMock()
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        # share_keys succeeds on first call (from _verify_device_keys_on_server),
+        # then raises "already exists" on the proactive OTK flush in connect().
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock(
+            side_effect=[None, Exception("One time key signed_curve25519:AAAAAQ already exists")]
+        )
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                result = await adapter.connect()
+
+        assert result is False
+
 
 # ---------------------------------------------------------------------------
 # Disconnect

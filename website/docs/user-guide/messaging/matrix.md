@@ -284,8 +284,35 @@ MATRIX_RECOVERY_KEY=EsT... your recovery key here
 
 On each startup, if `MATRIX_RECOVERY_KEY` is set, Hermes imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
 
-:::warning
-If you delete the `~/.hermes/platforms/matrix/store/` directory, the bot loses its encryption keys. You'll need to verify the device again in your Matrix client. Back up this directory if you want to preserve encrypted sessions.
+:::warning[Deleting the crypto store]
+If you delete `~/.hermes/platforms/matrix/store/crypto.db`, the bot loses its encryption identity. Simply restarting with the same device ID will **not** fully recover — the homeserver still holds one-time keys signed with the old identity key, and peers cannot establish new Olm sessions. The bot will start but silently fail to decrypt any new messages.
+
+**To recover**, you must also purge the device from the homeserver so there are no stale keys:
+
+1. Delete the old device from the homeserver (requires the bot's password or admin API access):
+   ```bash
+   # Via Synapse admin API (if you have admin access):
+   curl -X DELETE -H "Authorization: Bearer ADMIN_TOKEN" \
+     https://your-server/_synapse/admin/v2/users/@hermes:your-server/devices/DEVICE_ID
+
+   # Or via Synapse's SQLite DB directly (self-hosted):
+   sudo sqlite3 /var/lib/matrix-synapse/homeserver.db "
+     DELETE FROM e2e_device_keys_json WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
+     DELETE FROM e2e_one_time_keys_json WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
+     DELETE FROM e2e_fallback_keys_json WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
+     DELETE FROM devices WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
+   "
+   ```
+
+2. Delete the local crypto store and restart:
+   ```bash
+   rm -f ~/.hermes/platforms/matrix/store/crypto.db*
+   # restart hermes
+   ```
+
+Alternatively, **generate a new access token** (which gets a fresh device ID with no stale key history) — this is the simplest and most reliable recovery path. See the "Upgrading from a previous version with E2EE" section below.
+
+Other Matrix clients (Element, matrix-commander) may also cache the old device keys. After recovery, those clients may need to re-sync keys — in Element, type `/discardsession` in the room with the bot to force a new encryption session.
 :::
 
 :::info
