@@ -285,34 +285,39 @@ MATRIX_RECOVERY_KEY=EsT... your recovery key here
 On each startup, if `MATRIX_RECOVERY_KEY` is set, Hermes imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
 
 :::warning[Deleting the crypto store]
-If you delete `~/.hermes/platforms/matrix/store/crypto.db`, the bot loses its encryption identity. Simply restarting with the same device ID will **not** fully recover — the homeserver still holds one-time keys signed with the old identity key, and peers cannot establish new Olm sessions. The bot will start but silently fail to decrypt any new messages.
+If you delete `~/.hermes/platforms/matrix/store/crypto.db`, the bot loses its encryption identity. Simply restarting with the same device ID will **not** fully recover — the homeserver still holds one-time keys signed with the old identity key, and peers cannot establish new Olm sessions.
 
-**To recover**, you must also purge the device from the homeserver so there are no stale keys:
+Hermes detects this condition on startup and refuses to enable E2EE, logging: `device XXXX has stale one-time keys on the server signed with a previous identity key`.
 
-1. Delete the old device from the homeserver (requires the bot's password or admin API access):
+**Easiest recovery: generate a new access token** (which gets a fresh device ID with no stale key history). See the "Upgrading from a previous version with E2EE" section below. This is the most reliable path and avoids touching the homeserver database.
+
+**Manual recovery** (advanced — keeps the same device ID):
+
+1. Stop Synapse and delete the old device from its database:
    ```bash
-   # Via Synapse admin API (if you have admin access):
-   curl -X DELETE -H "Authorization: Bearer ADMIN_TOKEN" \
-     https://your-server/_synapse/admin/v2/users/@hermes:your-server/devices/DEVICE_ID
-
-   # Or via Synapse's SQLite DB directly (self-hosted):
+   sudo systemctl stop matrix-synapse
    sudo sqlite3 /var/lib/matrix-synapse/homeserver.db "
      DELETE FROM e2e_device_keys_json WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
      DELETE FROM e2e_one_time_keys_json WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
      DELETE FROM e2e_fallback_keys_json WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
      DELETE FROM devices WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
    "
+   sudo systemctl start matrix-synapse
    ```
+   Or via the Synapse admin API (note the URL-encoded user ID):
+   ```bash
+   curl -X DELETE -H "Authorization: Bearer ADMIN_TOKEN" \
+     'https://your-server/_synapse/admin/v2/users/%40hermes%3Ayour-server/devices/DEVICE_ID'
+   ```
+   Note: deleting a device via the admin API may also invalidate the associated access token. You may need to generate a new token afterward.
 
-2. Delete the local crypto store and restart:
+2. Delete the local crypto store and restart Hermes:
    ```bash
    rm -f ~/.hermes/platforms/matrix/store/crypto.db*
    # restart hermes
    ```
 
-Alternatively, **generate a new access token** (which gets a fresh device ID with no stale key history) — this is the simplest and most reliable recovery path. See the "Upgrading from a previous version with E2EE" section below.
-
-Other Matrix clients (Element, matrix-commander) may also cache the old device keys. After recovery, those clients may need to re-sync keys — in Element, type `/discardsession` in the room with the bot to force a new encryption session.
+Other Matrix clients (Element, matrix-commander) may cache the old device keys. After recovery, type `/discardsession` in Element to force a new encryption session with the bot.
 :::
 
 :::info
@@ -387,6 +392,10 @@ pip install 'hermes-agent[matrix]'
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.
 
 ### Upgrading from a previous version with E2EE
+
+:::tip
+If you also manually deleted `crypto.db`, see the "Deleting the crypto store" warning in the E2EE section above — there are additional steps to clear stale one-time keys from the homeserver.
+:::
 
 If you previously used Hermes with `MATRIX_ENCRYPTION=true` and are upgrading to
 a version that uses the new SQLite-based crypto store, the bot's encryption
